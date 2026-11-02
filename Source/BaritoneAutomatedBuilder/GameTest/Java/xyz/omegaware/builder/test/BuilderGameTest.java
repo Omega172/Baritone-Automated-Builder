@@ -47,6 +47,13 @@ public class BuilderGameTest implements FabricClientGameTest {
                 if (selected("dump")) shulkerCycle(ctx, world, true);
             if (selected("noreturn")) shulkerNoReturn(ctx, world);
             if (selected("multishulker")) multiItemShulker(ctx, world);
+            if (selected("stale")) staleStorage(ctx, world);
+            if (selected("assistgoal")) assistGoal(ctx, world);
+            if (selected("nudge")) nudgeWorkaround(ctx, world);
+            if (selected("albrecht") || selected("albrechta")) albrechtHalf(ctx, world, false);
+            if (selected("albrecht") || selected("albrechtb")) albrechtHalf(ctx, world, true);
+            if (selected("farloaded")) farStorage(ctx, world, 12, 100);
+            if (selected("farunloaded")) farStorage(ctx, world, 2, 64);
             if (selected("help")) helpCommand(ctx, world);
                 if (selected("kit")) omegaLogoKit(ctx, world);
             if (selected("omegalogo")) litematicaFile(ctx, world);
@@ -453,6 +460,332 @@ public class BuilderGameTest implements FabricClientGameTest {
         });
         assertTrue(aCounts[0] == 64 && aCounts[1] == 64, "multishulker placed planks " + aCounts[0] + " cobblestone " + aCounts[1]);
         System.out.println("[Test] PASS multishulker");
+    }
+
+    private static void farStorage(ClientGameTestContext ctx, TestSingleplayerContext world, int iRenderDistance, int iX) {
+        resetArena(ctx, world);
+        var server = world.getServer();
+        BlockPos ghost = new BlockPos(iX, 100, 0);
+        BlockPos real = new BlockPos(iX + 4, 100, 0);
+        BlockPos origin = new BlockPos(-4, 100, 2);
+
+        server.runCommand("forceload add 16 -16 " + (iX + 16) + " 16");
+        ctx.waitTicks(40);
+        server.runCommand("fill 21 99 -3 " + (iX + 8) + " 99 3 minecraft:dirt");
+        server.runCommand("fill 21 100 -3 " + (iX + 8) + " 106 3 minecraft:air");
+        server.runCommand("setblock " + ghost.getX() + " 100 0 minecraft:chest");
+        server.runCommand("setblock " + real.getX() + " 100 0 minecraft:chest");
+        server.runCommand("item replace block " + real.getX() + " 100 0 container.0 with minecraft:oak_planks 64");
+        ctx.waitTicks(20);
+        ctx.runOnClient(mc -> {
+            StorageIndex.get().record(ghost, Map.of(Items.OAK_PLANKS, 64));
+            StorageIndex.get().record(real, Map.of(Items.OAK_PLANKS, 64));
+        });
+        server.runCommand("setblock " + ghost.getX() + " 100 0 minecraft:air");
+
+        int iOldDistance = ctx.computeOnClient(mc -> mc.options.renderDistance().get());
+        int iOldServerDistance = server.computeOnServer(srv -> srv.getPlayerList().getViewDistance());
+        ctx.runOnClient(mc -> mc.options.renderDistance().set(iRenderDistance));
+        server.computeOnServer(srv -> {
+            srv.getPlayerList().setViewDistance(iRenderDistance);
+            return 0;
+        });
+        ctx.waitTicks(200);
+        boolean bChunkLoaded = ctx.computeOnClient(mc -> mc.level.getChunkSource().hasChunk(ghost.getX() >> 4, ghost.getZ() >> 4));
+        System.out.println("[Test] far storage, render distance " + iRenderDistance + ", ghost chunk loaded on client " + bChunkLoaded + ", ghost x " + iX);
+
+        var schematic = new StripeSchematic(16, 4, Blocks.OAK_PLANKS.defaultBlockState());
+        ctx.runOnClient(mc -> Controller.get().start("far", schematic, origin));
+        ctx.waitFor(mc -> Controller.get().state() == Controller.State.RESUPPLY || !Controller.get().isRunning(), iTimeoutTicks);
+        double dPlayerX = ctx.computeOnClient(mc -> mc.player.getX());
+        boolean bStillKnown = ctx.computeOnClient(mc -> StorageIndex.get().contains(ghost));
+        System.out.println("[Test] resupply planned with the player at x " + dPlayerX + ", ghost still in the list " + bStillKnown);
+        assertTrue(bChunkLoaded == (iRenderDistance >= 12), "unexpected chunk state for render distance " + iRenderDistance + ": loaded " + bChunkLoaded);
+        assertTrue(bStillKnown, "the storage was checked and removed from the list while it was unloaded or out of block entity range");
+
+        ctx.waitFor(mc -> !Controller.get().isRunning(), iTimeoutTicks);
+        ctx.runOnClient(mc -> mc.options.renderDistance().set(iOldDistance));
+        server.computeOnServer(srv -> {
+            srv.getPlayerList().setViewDistance(iOldServerDistance);
+            return 0;
+        });
+        System.out.println("[Test] far storage stopped in state " + Controller.get().state());
+        assertTrue(Controller.get().state() == Controller.State.FINISHED, "far storage scenario ended in " + Controller.get().state());
+        boolean bGhostKnown = ctx.computeOnClient(mc -> StorageIndex.get().contains(ghost));
+        assertTrue(!bGhostKnown, "the missing storage was not removed once the player walked into range");
+        int iPlaced = server.computeOnServer(srv -> {
+            int iCount = 0;
+            for (int x = 0; x < 4; x++) {
+                for (int z = 0; z < 16; z++) {
+                    if (srv.overworld().getBlockState(origin.offset(x, 0, z)).is(Blocks.OAK_PLANKS)) iCount++;
+                }
+            }
+            return iCount;
+        });
+        assertTrue(iPlaced == 64, "far storage scenario placed " + iPlaced + " of 64 planks");
+        System.out.println("[Test] PASS far storage " + iRenderDistance);
+    }
+
+    private static void albrechtHalf(ClientGameTestContext ctx, TestSingleplayerContext world, boolean bSecondHalf) {
+        java.nio.file.Path file = java.nio.file.Path.of("..", "..", "..", "run").toAbsolutePath().normalize().resolve("Albrecht.litematic");
+        if (!java.nio.file.Files.exists(file)) {
+            System.out.println("[Test] SKIP albrecht, no Albrecht.litematic in " + file.getParent());
+            return;
+        }
+        String strHalf = bSecondHalf ? "second half (printer and air place on)" : "first half (printer and air place off)";
+        resetArena(ctx, world);
+        var server = world.getServer();
+
+        baritone.api.schematic.IStaticSchematic full;
+        try (var stream = java.nio.file.Files.newInputStream(file)) {
+            full = baritone.api.BaritoneAPI.getProvider().getSchematicSystem().getByFile(file.toFile()).orElseThrow().parse(stream);
+        } catch (java.io.IOException e) {
+            throw new AssertionError("could not parse Albrecht.litematic", e);
+        }
+        int iHalf = full.lengthZ() / 2;
+        int iZOffset = bSecondHalf ? iHalf : 0;
+        int iZLength = bSecondHalf ? full.lengthZ() - iHalf : iHalf;
+        var slice = new SliceSchematic(full, iZOffset, iZLength);
+        BlockPos origin = new BlockPos(-64, 100, -140 + iZOffset);
+        System.out.println("[Test] Albrecht " + strHalf + ": schematic " + full.widthX() + "x" + full.heightY() + "x" + full.lengthZ() + ", slice rows " + iZOffset + " to " + (iZOffset + iZLength - 1) + ", origin " + origin.toShortString());
+
+        var aNeeded = new java.util.HashMap<net.minecraft.world.item.Item, Integer>();
+        var aBlockCounts = new java.util.TreeMap<String, Integer>();
+        int iBlocks = 0;
+        for (int x = 0; x < slice.widthX(); x++) {
+            for (int y = 0; y < slice.heightY(); y++) {
+                for (int z = 0; z < slice.lengthZ(); z++) {
+                    var state = slice.getDirect(x, y, z);
+                    if (state == null || state.isAir()) continue;
+                    iBlocks++;
+                    aBlockCounts.merge(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString(), 1, Integer::sum);
+                    if (state.getBlock().asItem() != Items.AIR) aNeeded.merge(state.getBlock().asItem(), 1, Integer::sum);
+                }
+            }
+        }
+        System.out.println("[Test] Albrecht " + strHalf + " has " + iBlocks + " blocks: " + aBlockCounts);
+        if (System.getenv("BUILDER_TOTALS_ONLY") != null) return;
+
+        int iMinX = -72;
+        int iMaxX = 71;
+        int iMinZ = origin.getZ() - 14;
+        int iMaxZ = origin.getZ() + iZLength + 13;
+        server.runCommand("forceload add " + iMinX + " " + iMinZ + " " + iMaxX + " " + iMaxZ);
+        ctx.waitTicks(100);
+        for (int z = iMinZ; z <= iMaxZ; z += 8) {
+            int iEnd = Math.min(z + 7, iMaxZ);
+            server.runCommand("fill " + iMinX + " 99 " + z + " " + iMaxX + " 99 " + iEnd + " minecraft:dirt");
+            server.runCommand("fill " + iMinX + " 100 " + z + " " + iMaxX + " 113 " + iEnd + " minecraft:air");
+        }
+        ctx.waitTicks(60);
+        server.runCommand("tp @p 0 100 " + (origin.getZ() - 4));
+        ctx.waitTicks(40);
+
+        BlockPos[] aChests = new BlockPos[5];
+        for (int i = 0; i < aChests.length; i++) {
+            aChests[i] = new BlockPos(-6 + i * 3, 100, origin.getZ() - 9);
+            server.runCommand("setblock " + aChests[i].getX() + " 100 " + aChests[i].getZ() + " minecraft:chest");
+        }
+        Map<BlockPos, java.util.List<StorageIndex.ShulkerInfo>> aShulkers = new java.util.HashMap<>();
+        for (BlockPos chest : aChests) aShulkers.put(chest, new java.util.ArrayList<>());
+        int iSlot = 0;
+        int iChest = 0;
+        for (var entry : aNeeded.entrySet()) {
+            int iLeft = entry.getValue() + Math.max(16, entry.getValue() / 5);
+            int iMax = new net.minecraft.world.item.ItemStack(entry.getKey()).getMaxStackSize();
+            String strId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(entry.getKey()).toString();
+            while (iLeft > 0) {
+                StringBuilder strContainer = new StringBuilder();
+                int iInBox = 0;
+                for (int iStack = 0; iStack < 27 && iLeft > 0; iStack++) {
+                    int iCount = Math.min(iLeft, iMax);
+                    if (iStack > 0) strContainer.append(',');
+                    strContainer.append("{slot:").append(iStack).append(",item:{id:\"").append(strId).append("\",count:").append(iCount).append("}}");
+                    iInBox += iCount;
+                    iLeft -= iCount;
+                }
+                assertTrue(iChest < aChests.length, "not enough chests for the shulker boxes");
+                BlockPos chest = aChests[iChest];
+                server.runCommand("item replace block " + chest.getX() + " 100 " + chest.getZ() + " container." + iSlot + " with minecraft:shulker_box[container=[" + strContainer + "]]");
+                aShulkers.get(chest).add(new StorageIndex.ShulkerInfo(iSlot, Map.of(entry.getKey(), iInBox)));
+                if (++iSlot == 27) {
+                    iSlot = 0;
+                    iChest++;
+                }
+            }
+        }
+        ctx.waitTicks(20);
+        ctx.runOnClient(mc -> {
+            ShulkerLedger.get().clear();
+            aShulkers.forEach((pos, infos) -> {
+                if (!infos.isEmpty()) StorageIndex.get().record(pos, Map.of(Items.SHULKER_BOX, infos.size()), infos);
+            });
+        });
+
+        server.runCommand("give @p minecraft:netherite_pickaxe[enchantments={efficiency:5},unbreakable={}]");
+        server.runCommand("effect give @p minecraft:speed infinite 2 true");
+        server.runCommand("effect give @p minecraft:haste infinite 1 true");
+        ctx.waitTicks(20);
+        ctx.takeScreenshot(bSecondHalf ? "albrecht-b-start" : "albrecht-a-start");
+
+        ctx.runOnClient(mc -> {
+            Config.set("printer", bSecondHalf ? "true" : "false");
+            Config.set("printer-air-place", bSecondHalf ? "on" : "off");
+            Config.set("printer-delay", "0");
+            Config.set("printer-blocks-per-tick", "4");
+        });
+        System.out.println("[Test] Albrecht " + strHalf + " starting, printer " + Config.bPrinter + ", air place " + Config.eAirPlace);
+        ctx.runOnClient(mc -> Controller.get().start("albrecht", slice, origin));
+        int iWaited;
+        try {
+            iWaited = ctx.waitFor(mc -> !Controller.get().isRunning(), 20 * 60 * 90);
+        } catch (AssertionError e) {
+            iWaited = -1;
+        }
+        ctx.runOnClient(mc -> {
+            Config.set("printer", "false");
+            Config.set("printer-air-place", "auto");
+        });
+        int iLeftOver = ctx.computeOnClient(mc -> Controller.get().needed().values().stream().mapToInt(Integer::intValue).sum());
+        System.out.println("[Test] Albrecht " + strHalf + " stopped after " + iWaited + " ticks, state " + Controller.get().state() + ", blocks left by the controller " + iLeftOver);
+        ctx.takeScreenshot(bSecondHalf ? "albrecht-b-end" : "albrecht-a-end");
+
+        var aMismatch = new java.util.TreeMap<String, Integer>();
+        int[] aMatched = {0};
+        server.computeOnServer(srv -> {
+            for (int x = 0; x < slice.widthX(); x++) {
+                for (int y = 0; y < slice.heightY(); y++) {
+                    for (int z = 0; z < slice.lengthZ(); z++) {
+                        var wanted = slice.getDirect(x, y, z);
+                        if (wanted == null || wanted.isAir()) continue;
+                        var got = srv.overworld().getBlockState(origin.offset(x, y, z));
+                        if (sameOrientation(wanted, got)) aMatched[0]++;
+                        else aMismatch.merge(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(wanted.getBlock()).toString(), 1, Integer::sum);
+                    }
+                }
+            }
+            return 0;
+        });
+        System.out.println("[Test] Albrecht " + strHalf + " result: " + aMatched[0] + " of " + iBlocks + " blocks correct, wrong or missing by block " + aMismatch);
+        assertTrue(Controller.get().state() != Controller.State.ABORTED, "Albrecht " + strHalf + " aborted");
+        System.out.println("[Test] PASS albrecht " + (bSecondHalf ? "second half" : "first half"));
+    }
+
+    private static void nudgeWorkaround(ClientGameTestContext ctx, TestSingleplayerContext world) {
+        resetArena(ctx, world);
+        var server = world.getServer();
+        BlockPos origin = new BlockPos(-3, 100, 3);
+        server.runCommand("give @p minecraft:stone 64");
+        ctx.waitTicks(10);
+        ctx.runOnClient(mc -> Config.set("printer", "false"));
+
+        ctx.runOnClient(mc -> Controller.get().start("nudge", new CubeSchematic(6, 1, 6, Blocks.STONE.defaultBlockState()), origin));
+        ctx.waitTicks(70);
+        ctx.runOnClient(mc -> baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess().pause());
+        boolean[] aSawNudge = {false};
+        ctx.waitFor(mc -> {
+            if (Controller.get().state() == Controller.State.RESUPPLY) aSawNudge[0] = true;
+            return !Controller.get().isRunning();
+        }, iTimeoutTicks);
+        System.out.println("[Test] nudge stopped in state " + Controller.get().state() + ", moved away " + aSawNudge[0] + ", printer " + Config.bPrinter);
+
+        assertTrue(aSawNudge[0], "the controller did not move away after Baritone paused with the item in the inventory");
+        assertTrue(!Config.bPrinter, "the printer must stay off");
+        assertTrue(Controller.get().state() == Controller.State.FINISHED, "nudge scenario ended in " + Controller.get().state());
+        int iStone = server.computeOnServer(srv -> {
+            int iCount = 0;
+            for (int x = 0; x < 6; x++) {
+                for (int z = 0; z < 6; z++) {
+                    if (srv.overworld().getBlockState(origin.offset(x, 0, z)).is(Blocks.STONE)) iCount++;
+                }
+            }
+            return iCount;
+        });
+        assertTrue(iStone == 36, "nudge scenario placed " + iStone + " of 36 stone");
+        System.out.println("[Test] PASS nudge workaround");
+    }
+
+    private static void assistGoal(ClientGameTestContext ctx, TestSingleplayerContext world) {
+        resetArena(ctx, world);
+        var server = world.getServer();
+        BlockPos target = new BlockPos(2, 100, 2);
+        var wanted = facing("minecraft:gray_glazed_terracotta", net.minecraft.core.Direction.EAST);
+        server.runCommand("give @p minecraft:gray_glazed_terracotta 4");
+        server.runCommand("tp @p 2.5 100 2.5");
+        ctx.waitTicks(20);
+
+        var goal = new xyz.omegaware.builder.step.PlaceReachGoal(target, 3);
+        boolean bInsideAccepted = ctx.computeOnClient(mc -> goal.isInGoal(mc.player.blockPosition()));
+        assertTrue(!bInsideAccepted, "standing inside the target cell must not satisfy the goal");
+
+        ctx.runOnClient(mc -> {
+            Config.set("printer", "true");
+            Config.set("printer-rotate", "true");
+            baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getCustomGoalProcess().setGoalAndPath(goal);
+        });
+        ctx.waitFor(mc -> goal.isInGoal(mc.player.blockPosition())
+            && !baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing(), 20 * 30);
+        var session = ctx.computeOnClient(mc -> new BuildSession("assistgoal", new StatesSchematic(1, 1, 1, wanted), target));
+        for (int i = 0; i < 60; i++) {
+            ctx.runOnClient(mc -> {
+                session.tick(mc.level);
+                Printer.assist(session, target);
+            });
+            ctx.waitTick();
+        }
+        ctx.runOnClient(mc -> Config.set("printer", "false"));
+        ctx.takeScreenshot("assist-goal-end");
+
+        var got = server.computeOnServer(srv -> srv.overworld().getBlockState(target));
+        System.out.println("[Test] assist goal wanted " + wanted + " got " + got);
+        assertTrue(sameOrientation(wanted, got), "the block was not placed after moving out of its cell: " + got);
+        System.out.println("[Test] PASS assist goal");
+    }
+
+    private static void staleStorage(ClientGameTestContext ctx, TestSingleplayerContext world) {
+        resetArena(ctx, world);
+        var server = world.getServer();
+        BlockPos empty = new BlockPos(1, 100, -3);
+        BlockPos full = new BlockPos(-4, 100, -5);
+        BlockPos ghost = new BlockPos(6, 100, -3);
+        BlockPos origin = new BlockPos(-4, 100, 2);
+
+        server.runCommand("setblock 1 100 -3 minecraft:chest");
+        server.runCommand("setblock -4 100 -5 minecraft:chest");
+        server.runCommand("item replace block -4 100 -5 container.0 with minecraft:oak_planks 64");
+        ctx.waitTicks(20);
+
+        ctx.runOnClient(mc -> {
+            StorageIndex.get().record(empty, Map.of(Items.OAK_PLANKS, 64));
+            StorageIndex.get().record(full, Map.of(Items.OAK_PLANKS, 64));
+            StorageIndex.get().record(ghost, Map.of(Items.OAK_PLANKS, 64));
+        });
+        var schematic = new StripeSchematic(16, 4, Blocks.OAK_PLANKS.defaultBlockState());
+        ctx.runOnClient(mc -> Controller.get().start("stale", schematic, origin));
+        ctx.waitFor(mc -> !Controller.get().isRunning(), iTimeoutTicks);
+        System.out.println("[Test] stale stopped in state " + Controller.get().state());
+
+        assertTrue(Controller.get().state() == Controller.State.FINISHED, "stale scenario ended in " + Controller.get().state());
+        boolean bGhostKnown = ctx.computeOnClient(mc -> StorageIndex.get().contains(ghost));
+        assertTrue(!bGhostKnown, "the storage that no longer exists was not removed from the index");
+        int iEmptyPlanks = ctx.computeOnClient(mc -> {
+            for (var entry : StorageIndex.get().all()) {
+                if (entry.pos.equals(empty)) return entry.contents.getOrDefault(Items.OAK_PLANKS, 0);
+            }
+            return -1;
+        });
+        assertTrue(iEmptyPlanks == 0, "the emptied chest should have been re-indexed with no planks, found " + iEmptyPlanks);
+        int iPlaced = server.computeOnServer(srv -> {
+            int iCount = 0;
+            for (int x = 0; x < 4; x++) {
+                for (int z = 0; z < 16; z++) {
+                    if (srv.overworld().getBlockState(origin.offset(x, 0, z)).is(Blocks.OAK_PLANKS)) iCount++;
+                }
+            }
+            return iCount;
+        });
+        assertTrue(iPlaced == 64, "stale scenario placed " + iPlaced + " of 64 planks");
+        System.out.println("[Test] PASS stale storage");
     }
 
     private static void shulkerNoReturn(ClientGameTestContext ctx, TestSingleplayerContext world) {

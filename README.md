@@ -26,12 +26,15 @@ Watch the basics and a full build here: https://youtu.be/NUockEhBvDw
 | `/autobuild config [key] [value]` | List or change settings |
 | `/autobuild link` | Toggle indexing of every storage you open |
 | `/autobuild storages` | List indexed storages |
-| `/autobuild forget` | Clear the storage index |
+| `/autobuild unlink` | Remove the storage you are looking at from the index |
+| `/autobuild forget` | Clear the whole storage index |
 | `/autobuild sethome` | Set the position to return to when stuck |
 | `/autobuild setdump` | Set the storage you are looking at as the dump chest for returned shulker boxes |
 | `/autobuild cleardump` | Clear the dump chest |
 | `/autobuild returnshulkers` | Return every shulker box you are carrying to where it came from (or the dump chest) |
 | `/autobuild help` | Print this list and every setting |
+
+Storages stay up to date on their own. Opening an already linked storage refreshes it with its final contents when you close it, even with link mode off (link mode only controls whether new storages are added). Before a resupply trip the mod checks every loaded storage and removes any that no longer exist, and when a storage is outside the loaded area it first walks until the chunk loads and checks it before going on.
 
 Changing a setting prints `Set <key> to <value> | Was: <old value>`.
 
@@ -43,7 +46,7 @@ Set `/autobuild config shulker-return dump` to send returned shulker boxes to th
 
 ## Printer
 
-The printer places missing blocks that are within reach while Baritone keeps pathing and handling everything else. It reproduces block direction by simulating vanilla placement and turning the player before it clicks, so stairs, glazed terracotta, logs, slabs, observers and similar blocks come out facing the right way. Blocks Baritone reports as missing while the item is in the inventory are placed by the printer after the controller walks next to them.
+The printer places missing blocks that are within reach while Baritone keeps pathing and handling everything else. It reproduces block direction by simulating vanilla placement and turning the player before it clicks, so stairs, glazed terracotta, logs, slabs, observers and similar blocks come out facing the right way. With the printer on, blocks Baritone reports as missing while the item is in the inventory are placed by the printer after the controller walks next to them. With the printer off the mod never turns it on by itself. It moves the player a few blocks away so Baritone can try again from another angle.
 
 | Setting | Values | Default |
 |---|---|---|

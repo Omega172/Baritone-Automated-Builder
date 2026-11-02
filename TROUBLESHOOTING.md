@@ -25,7 +25,9 @@ Fix: the tick stops as soon as the printer has turned the player to place an ori
 
 Cause: Baritone only counts an oriented block as placeable if it can produce that exact state from where the player stands right now. It then pauses with "Unable to do it".
 
-Fix: when the printer is on and Baritone is paused while we hold the item, the controller walks next to the nearest such block and lets the printer place it (the "placing it with the printer" chat line). It tries each position 3 times. This needs `printer` on.
+Fix with the printer on: when Baritone is paused while we hold the item, the controller walks to a spot within reach of the nearest such block that is not inside the block's own cell or the cell above it, and lets the printer place it (the "placing it with the printer" chat line). It tries each position 3 times. Standing in the target cell used to leave the printer unable to place the block, so the player has to be moved out of it.
+
+With the printer off the mod never turns it on and never uses it. It moves the player a few blocks away, one side of the block at a time for up to 4 tries, and restarts the build so Baritone can try from a different angle. If that also fails the normal stuck handling applies.
 
 ### The player broke the block under itself and fell into a hole
 
