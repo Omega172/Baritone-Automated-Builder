@@ -6,12 +6,18 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ChestMenu;
+import net.minecraft.world.inventory.DispenserMenu;
+import net.minecraft.world.inventory.HopperMenu;
+import net.minecraft.world.inventory.ShulkerBoxMenu;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import xyz.omegaware.builder.core.Config;
@@ -41,7 +47,8 @@ public class BuilderMod implements ClientModInitializer {
         {"/autobuild config [key] [value]", "List or change settings"},
         {"/autobuild link", "Toggle indexing of every storage you open"},
         {"/autobuild storages", "List indexed storages"},
-        {"/autobuild forget", "Clear the storage index"},
+        {"/autobuild unlink", "Remove the storage you are looking at from the index"},
+        {"/autobuild forget", "Clear the whole storage index"},
         {"/autobuild sethome", "Set the position to return to when stuck"},
         {"/autobuild setdump", "Set the storage you are looking at as the dump chest for returned shulker boxes"},
         {"/autobuild cleardump", "Clear the dump chest"},
@@ -55,6 +62,11 @@ public class BuilderMod implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             Controller.get().tick();
             tickLinkMode(mc);
+        });
+
+        ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
+            if (!(screen instanceof AbstractContainerScreen<?> containerScreen)) return;
+            ScreenEvents.remove(screen).register(removed -> commitClosed(client, containerScreen.getMenu()));
         });
 
         UseBlockCallback.EVENT.register((player, level, hand, hit) -> {
@@ -97,6 +109,22 @@ public class BuilderMod implements ClientModInitializer {
                 }))
                 .then(ClientCommands.literal("storages").executes(context -> {
                     StorageIndex.get().all().forEach(entry -> Log.chat(entry.pos.toShortString() + ": " + entry.contents.size() + " item types"));
+                    return 1;
+                }))
+                .then(ClientCommands.literal("unlink").executes(context -> {
+                    Minecraft mc = Minecraft.getInstance();
+                    if (mc.player == null || mc.level == null) return 0;
+                    if (!(mc.hitResult instanceof net.minecraft.world.phys.BlockHitResult hit) || hit.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK) {
+                        Log.chat("Look at a linked storage first.");
+                        return 0;
+                    }
+                    BlockPos pos = Storage.canonical(mc.level, hit.getBlockPos());
+                    if (!StorageIndex.get().contains(pos)) {
+                        Log.chat("That storage is not linked.");
+                        return 0;
+                    }
+                    StorageIndex.get().forget(pos);
+                    Log.chat("Unlinked storage at " + pos.toShortString());
                     return 1;
                 }))
                 .then(ClientCommands.literal("forget").executes(context -> {
@@ -156,13 +184,37 @@ public class BuilderMod implements ClientModInitializer {
         ));
     }
 
+    private static boolean isStorageMenu(AbstractContainerMenu menu) {
+        return menu instanceof ChestMenu || menu instanceof ShulkerBoxMenu || menu instanceof HopperMenu || menu instanceof DispenserMenu;
+    }
+
+    private static boolean index(Minecraft mc, AbstractContainerMenu menu, BlockPos pos) {
+        boolean bNew = !StorageIndex.get().contains(pos);
+        Map<Item, Integer> contents = new HashMap<>();
+        int iContainerSlots = menu.slots.size() - Inv.iMainSize;
+        for (int i = 0; i < iContainerSlots; i++) {
+            ItemStack stack = menu.getSlot(i).getItem();
+            if (!stack.isEmpty()) contents.merge(stack.getItem(), stack.getCount(), Integer::sum);
+        }
+        StorageIndex.get().record(pos, contents, TransferStep.shulkerInfos(menu, iContainerSlots));
+        return bNew;
+    }
+
+    private static void commitClosed(Minecraft mc, AbstractContainerMenu menu) {
+        if (mc.player == null || mc.level == null || Controller.get().isRunning() || s_lastClicked == null) return;
+        if (!isStorageMenu(menu) || !Storage.isStorage(mc.level, s_lastClicked)) return;
+        if (!s_bLinkMode && !StorageIndex.get().contains(s_lastClicked)) return;
+        index(mc, menu, s_lastClicked);
+    }
+
     private static void tickLinkMode(Minecraft mc) {
         LocalPlayer player = mc.player;
-        if (player == null || !s_bLinkMode || Controller.get().isRunning() || s_lastClicked == null) return;
+        if (player == null || Controller.get().isRunning() || s_lastClicked == null) return;
         if (!Storage.isStorage(mc.level, s_lastClicked)) return;
+        if (!s_bLinkMode && !StorageIndex.get().contains(s_lastClicked)) return;
 
         AbstractContainerMenu menu = player.containerMenu;
-        if (menu == player.inventoryMenu) {
+        if (menu == player.inventoryMenu || !isStorageMenu(menu)) {
             s_lastMenu = null;
             return;
         }
@@ -173,13 +225,7 @@ public class BuilderMod implements ClientModInitializer {
         }
         if (++s_iMenuTicks != 5) return;
 
-        Map<Item, Integer> contents = new HashMap<>();
-        int iContainerSlots = menu.slots.size() - Inv.iMainSize;
-        for (int i = 0; i < iContainerSlots; i++) {
-            ItemStack stack = menu.getSlot(i).getItem();
-            if (!stack.isEmpty()) contents.merge(stack.getItem(), stack.getCount(), Integer::sum);
-        }
-        StorageIndex.get().record(s_lastClicked, contents, TransferStep.shulkerInfos(menu, iContainerSlots));
-        Log.chat("Indexed storage at " + s_lastClicked.toShortString() + " (" + contents.size() + " item types)");
+        if (index(mc, menu, s_lastClicked)) Log.chat("Indexed storage at " + s_lastClicked.toShortString());
+        else Log.LOGGER.info("Updated storage at {}", s_lastClicked.toShortString());
     }
 }

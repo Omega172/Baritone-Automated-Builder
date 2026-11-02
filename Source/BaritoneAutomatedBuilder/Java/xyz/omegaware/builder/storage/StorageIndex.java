@@ -165,6 +165,15 @@ public class StorageIndex {
         return aSources;
     }
 
+    public boolean contains(BlockPos rawPos) {
+        ensureLoaded();
+        BlockPos pos = canonical(rawPos);
+        for (Entry entry : m_aEntries) {
+            if (entry.pos.equals(pos)) return true;
+        }
+        return false;
+    }
+
     public void forget(BlockPos rawPos) {
         ensureLoaded();
         BlockPos pos = canonical(rawPos);
