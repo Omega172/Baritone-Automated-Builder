@@ -1,0 +1,10 @@
+.gradle/
+.idea/
+Build/
+build/
+run/
+*.class
+compile_commands.json
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json

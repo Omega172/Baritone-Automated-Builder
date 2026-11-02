@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "baritone-automated-builder",
+  "version": "${version}",
+  "name": "Baritone Automated Builder",
+  "description": "Fully autonomous Baritone building with chest and shulker box resupply.",
+  "authors": ["Omega172"],
+  "license": "GPL-3.0-only",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["xyz.omegaware.builder.BuilderMod"]
+  },
+  "depends": {
+    "java": ">=25",
+    "minecraft": "${mc_version}",
+    "fabric-api": "*"
+  }
+}
