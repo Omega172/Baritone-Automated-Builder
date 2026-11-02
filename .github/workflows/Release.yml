@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create, for example v0.1.0
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -31,4 +37,5 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" Build/Release/*.jar --title "${{ github.ref_name }}" --generate-notes
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release create "$RELEASE_TAG" Build/Release/*.jar --title "$RELEASE_TAG" --target "${{ github.sha }}" --generate-notes
