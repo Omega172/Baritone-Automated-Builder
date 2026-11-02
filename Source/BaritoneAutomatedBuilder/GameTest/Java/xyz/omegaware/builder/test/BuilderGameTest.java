@@ -46,6 +46,7 @@ public class BuilderGameTest implements FabricClientGameTest {
                 if (selected("cycle")) shulkerCycle(ctx, world, false);
                 if (selected("dump")) shulkerCycle(ctx, world, true);
             if (selected("noreturn")) shulkerNoReturn(ctx, world);
+            if (selected("multishulker")) multiItemShulker(ctx, world);
             if (selected("help")) helpCommand(ctx, world);
                 if (selected("kit")) omegaLogoKit(ctx, world);
             if (selected("omegalogo")) litematicaFile(ctx, world);
@@ -414,6 +415,44 @@ public class BuilderGameTest implements FabricClientGameTest {
         ctx.takeScreenshot("config-set-message");
         ctx.runOnClient(mc -> Config.set("printer-range", "4.4"));
         System.out.println("[Test] PASS help command ran");
+    }
+
+    private static void multiItemShulker(ClientGameTestContext ctx, TestSingleplayerContext world) {
+        resetArena(ctx, world);
+        var server = world.getServer();
+        BlockPos chest = new BlockPos(4, 100, -5);
+        BlockPos origin = new BlockPos(-4, 100, 2);
+
+        server.runCommand("setblock 4 100 -5 minecraft:chest");
+        server.runCommand("item replace block 4 100 -5 container.5 with minecraft:shulker_box[container=[{slot:0,item:{id:\"minecraft:oak_planks\",count:64}},{slot:1,item:{id:\"minecraft:cobblestone\",count:64}}]]");
+        ctx.waitTicks(20);
+
+        var shulkerItem = net.minecraft.world.item.Items.SHULKER_BOX;
+        ctx.runOnClient(mc -> {
+            ShulkerLedger.get().clear();
+            ShulkerLedger.iUseCycles = 0;
+            StorageIndex.get().record(chest, Map.of(shulkerItem, 1), java.util.List.of(new StorageIndex.ShulkerInfo(5, Map.of(Items.OAK_PLANKS, 64, Items.COBBLESTONE, 64))));
+        });
+        var schematic = new StripeSchematic(16, 4, Blocks.OAK_PLANKS.defaultBlockState(), Blocks.COBBLESTONE.defaultBlockState());
+        ctx.runOnClient(mc -> Controller.get().start("multishulker", schematic, origin));
+        ctx.waitFor(mc -> !Controller.get().isRunning(), iTimeoutTicks);
+        System.out.println("[Test] multishulker stopped in state " + Controller.get().state() + ", use cycles " + ShulkerLedger.iUseCycles);
+
+        assertTrue(Controller.get().state() == Controller.State.FINISHED, "multishulker scenario ended in " + Controller.get().state());
+        assertTrue(ShulkerLedger.iUseCycles == 1, "one shulker holding both items should be placed once, got " + ShulkerLedger.iUseCycles + " cycles");
+        int[] aCounts = server.computeOnServer(srv -> {
+            int[] counts = new int[2];
+            for (int x = 0; x < 8; x++) {
+                for (int z = 0; z < 16; z++) {
+                    var state = srv.overworld().getBlockState(origin.offset(x, 0, z));
+                    if (state.is(Blocks.OAK_PLANKS)) counts[0]++;
+                    if (state.is(Blocks.COBBLESTONE)) counts[1]++;
+                }
+            }
+            return counts;
+        });
+        assertTrue(aCounts[0] == 64 && aCounts[1] == 64, "multishulker placed planks " + aCounts[0] + " cobblestone " + aCounts[1]);
+        System.out.println("[Test] PASS multishulker");
     }
 
     private static void shulkerNoReturn(ClientGameTestContext ctx, TestSingleplayerContext world) {

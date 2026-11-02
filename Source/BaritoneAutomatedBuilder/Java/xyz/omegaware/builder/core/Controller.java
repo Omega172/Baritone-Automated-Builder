@@ -418,7 +418,8 @@ public class Controller {
 
         BlockPos from = player.blockPosition();
         Map<Integer, Map<Item, Integer>> aInventoryGroups = new LinkedHashMap<>();
-        Map<Item, Integer> aFetched = new LinkedHashMap<>();
+        Map<String, Map<Item, Integer>> aFetchedGroups = new LinkedHashMap<>();
+        Map<BlockPos, List<StorageIndex.ShulkerInfo>> aTakenInfos = new HashMap<>();
         Map<BlockPos, List<Item>> aFetchByChest = new HashMap<>();
         Map<BlockPos, Map<Item, Integer>> aLooseByChest = new HashMap<>();
 
@@ -434,8 +435,28 @@ public class Controller {
 
             List<StorageIndex.Entry> aShulkerSources = StorageIndex.get().shulkerSourcesFor(item, from);
             if (!aShulkerSources.isEmpty()) {
-                aFetchByChest.computeIfAbsent(aShulkerSources.getFirst().pos, key -> new ArrayList<>()).add(item);
-                aFetched.put(item, iLeft);
+                StorageIndex.Entry source = aShulkerSources.getFirst();
+                aFetchByChest.computeIfAbsent(source.pos, key -> new ArrayList<>()).add(item);
+
+                List<StorageIndex.ShulkerInfo> aTaken = aTakenInfos.computeIfAbsent(source.pos, key -> new ArrayList<>());
+                StorageIndex.ShulkerInfo shulker = null;
+                for (StorageIndex.ShulkerInfo taken : aTaken) {
+                    if (taken.contents().getOrDefault(item, 0) > 0) {
+                        shulker = taken;
+                        break;
+                    }
+                }
+                if (shulker == null) {
+                    for (StorageIndex.ShulkerInfo info : source.shulkers) {
+                        if (info.contents().getOrDefault(item, 0) > 0) {
+                            shulker = info;
+                            aTaken.add(info);
+                            break;
+                        }
+                    }
+                }
+                String strGroup = source.pos.asLong() + "#" + (shulker != null ? shulker.slot() : -1 - aFetchedGroups.size());
+                aFetchedGroups.computeIfAbsent(strGroup, key -> new LinkedHashMap<>()).put(item, iLeft);
                 continue;
             }
 
@@ -462,8 +483,8 @@ public class Controller {
         for (Map<Item, Integer> aGroup : aInventoryGroups.values()) {
             addUseCycle(aPlan, aGroup.keySet().iterator().next(), aGroup);
         }
-        for (Map.Entry<Item, Integer> entry : aFetched.entrySet()) {
-            addUseCycle(aPlan, entry.getKey(), Map.of(entry.getKey(), entry.getValue()));
+        for (Map<Item, Integer> aGroup : aFetchedGroups.values()) {
+            addUseCycle(aPlan, aGroup.keySet().iterator().next(), aGroup);
         }
         return aPlan;
     }

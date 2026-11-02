@@ -2,6 +2,10 @@
 
 Standalone Fabric client mod for Minecraft that drives Baritone's builder fully autonomously, including resupply from chests, barrels and shulker boxes, with an optional printer that places blocks in reach without pathing.
 
+## Demo
+
+Watch the basics and a full build here: https://youtu.be/NUockEhBvDw
+
 ## Requirements
 
 - The Minecraft version the release was built for, shown at the end of the jar name (`+<Minecraft version>`), with Fabric Loader and [Fabric API](https://modrinth.com/mod/fabric-api)
