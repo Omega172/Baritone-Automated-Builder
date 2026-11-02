@@ -1,14 +1,14 @@
 # Baritone Automated Builder
 
-Standalone Fabric client mod for Minecraft 26.3 that drives Baritone's builder fully autonomously, including resupply from chests, barrels and shulker boxes, with an optional printer that places blocks in reach without pathing.
+Standalone Fabric client mod for Minecraft that drives Baritone's builder fully autonomously, including resupply from chests, barrels and shulker boxes, with an optional printer that places blocks in reach without pathing.
 
 ## Requirements
 
-- Minecraft 26.3 with Fabric Loader and Fabric API
-- Baritone for 26.3 (Meteor's build or the cabaletta 26.3 branch)
-- JDK 25 or newer
-- Optional: Litematica and malilib to build from a placed schematic
-- Optional: Meteor Client with the Meteor Litematica Printer addon to use its printer
+- The Minecraft version the release was built for, shown at the end of the jar name (`+<Minecraft version>`), with Fabric Loader and [Fabric API](https://modrinth.com/mod/fabric-api)
+- [Baritone](https://github.com/cabaletta/baritone) for that same Minecraft version (the [Meteor Client](https://meteorclient.com/) build or the matching cabaletta branch)
+- Only to build from source: a JDK new enough for that Minecraft version
+- Optional: [Litematica](https://modrinth.com/mod/litematica) and [malilib](https://modrinth.com/mod/malilib) to build from a placed schematic
+- Optional: [Meteor Client](https://meteorclient.com/) with the [Meteor Litematica Printer](https://github.com/kkllffaa/meteor-litematica-printer) addon to use its printer instead. The mod has its own built-in printer, so neither is needed
 
 ## Commands
 
