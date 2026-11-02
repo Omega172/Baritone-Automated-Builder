@@ -8,6 +8,7 @@ import baritone.api.pathing.goals.GoalNear;
 import baritone.api.schematic.IStaticSchematic;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.Item;
@@ -19,16 +20,19 @@ import xyz.omegaware.builder.step.CloseContainerStep;
 import xyz.omegaware.builder.step.OpenContainerStep;
 import xyz.omegaware.builder.step.PathStep;
 import xyz.omegaware.builder.step.PickupStep;
+import xyz.omegaware.builder.step.PlaceReachGoal;
 import xyz.omegaware.builder.step.PlaceShulkerStep;
 import xyz.omegaware.builder.step.Step;
 import xyz.omegaware.builder.step.TransferStep;
 import xyz.omegaware.builder.step.FetchShulkerStep;
 import xyz.omegaware.builder.step.LedgerUpdateStep;
 import xyz.omegaware.builder.step.ReturnShulkersStep;
+import xyz.omegaware.builder.step.ScoutStep;
 import xyz.omegaware.builder.storage.ShulkerLedger;
 import xyz.omegaware.builder.storage.StorageIndex;
 import xyz.omegaware.builder.util.Inv;
 import xyz.omegaware.builder.util.Log;
+import xyz.omegaware.builder.util.Storage;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -61,6 +65,9 @@ public class Controller {
     private int m_iCooldown = 0;
     private int m_iTick = 0;
     private final Map<BlockPos, Integer> m_aAssisted = new HashMap<>();
+    private final Map<BlockPos, Integer> m_aNudged = new HashMap<>();
+    private static final int iMaxNudges = 4;
+    private static final net.minecraft.core.Direction[] s_aNudgeSides = {net.minecraft.core.Direction.NORTH, net.minecraft.core.Direction.EAST, net.minecraft.core.Direction.SOUTH, net.minecraft.core.Direction.WEST};
 
     public static Controller get() {
         return s_instance;
@@ -135,6 +142,7 @@ public class Controller {
         m_iFailures = 0;
         m_iStuckEvents = 0;
         m_aAssisted.clear();
+        m_aNudged.clear();
         beginBuilding();
         Log.chat("Building " + strName + " at " + origin.toShortString());
         return true;
@@ -229,18 +237,31 @@ public class Controller {
             }
         }
 
-        if (Config.bPrinter && baritone().getBuilderProcess().isPaused() && m_session.hasCompletedPass()) {
+        if (baritone().getBuilderProcess().isPaused() && m_session.hasCompletedPass()) {
             BlockPos target = m_session.nearestPending(player.blockPosition(),
-                (pos, state) -> Inv.count(state.getBlock().asItem()) > 0 && m_aAssisted.getOrDefault(pos, 0) < 3);
+                (pos, state) -> Inv.count(state.getBlock().asItem()) > 0 && (m_aAssisted.getOrDefault(pos, 0) < 3 || m_aNudged.getOrDefault(pos, 0) < iMaxNudges));
             if (target != null) {
-                m_aAssisted.merge(target, 1, Integer::sum);
-                baritone().getPathingBehavior().cancelEverything();
-                m_aSteps.clear();
-                m_aSteps.add(new PathStep("place near " + target.toShortString(), () -> new GoalNear(target, 2)));
-                m_aSteps.add(new AssistPlaceStep(m_session, target));
-                m_eState = State.RESUPPLY;
-                Log.chat("Baritone cannot place " + target.toShortString() + " from here, placing it with the printer.");
-                return;
+                if (Config.bPrinter && m_aAssisted.getOrDefault(target, 0) < 3) {
+                    m_aAssisted.merge(target, 1, Integer::sum);
+                    baritone().getPathingBehavior().cancelEverything();
+                    m_aSteps.clear();
+                    m_aSteps.add(new PathStep("place near " + target.toShortString(), () -> new PlaceReachGoal(target, 3)));
+                    m_aSteps.add(new AssistPlaceStep(m_session, target));
+                    m_eState = State.RESUPPLY;
+                    Log.chat("Baritone cannot place " + target.toShortString() + " from here, placing it with the printer.");
+                    return;
+                }
+                if (m_aNudged.getOrDefault(target, 0) < iMaxNudges) {
+                    int iAttempt = m_aNudged.merge(target, 1, Integer::sum);
+                    net.minecraft.core.Direction side = s_aNudgeSides[(iAttempt - 1) % s_aNudgeSides.length];
+                    BlockPos spot = target.relative(side, 4);
+                    baritone().getPathingBehavior().cancelEverything();
+                    m_aSteps.clear();
+                    m_aSteps.add(new PathStep("move away from " + target.toShortString(), () -> new GoalNear(spot, 1)));
+                    m_eState = State.RESUPPLY;
+                    Log.chat("Moving a few blocks away from " + target.toShortString() + " to try a different angle (" + iAttempt + "/" + iMaxNudges + ").");
+                    return;
+                }
             }
         }
 
@@ -259,6 +280,14 @@ public class Controller {
                 abort("stuck too many times");
                 return;
             }
+            var builderProcess = baritone().getBuilderProcess();
+            BlockPos nearest = m_session.nearestPending(player.blockPosition(), (pos, state) -> true);
+            net.minecraft.world.level.block.state.BlockState nearestWanted = nearest != null ? m_session.desiredState(nearest) : null;
+            Log.LOGGER.info("Stuck diagnostics: builder active {} paused {}, pathing {}, goal {}, player {} yaw {} pitch {}, held {}, needed {}, printer [{}], nearest pending {} wants {} has {} carried {}, free slots {}",
+                builderProcess.isActive(), builderProcess.isPaused(), baritone().getPathingBehavior().isPathing(), baritone().getPathingBehavior().getGoal(),
+                player.position(), player.getYRot(), player.getXRot(), player.getInventory().getSelectedItem(), iNeeded, Printer.debug(),
+                nearest, nearestWanted, nearest != null ? Minecraft.getInstance().level.getBlockState(nearest) : null,
+                nearestWanted != null ? Inv.count(nearestWanted.getBlock().asItem()) : -1, Inv.freeSlots());
             Log.chat("Stuck, restarting the build (" + m_iStuckEvents + "/" + Config.iMaxFailures + ").");
             BlockPos home = StorageIndex.get().home();
             if (home != null) {
@@ -292,7 +321,14 @@ public class Controller {
         String strName = m_currentStep.name();
         Log.LOGGER.info("Step end: {} -> {} after {} ticks", strName, result, m_iStepTicks);
         m_currentStep.stop();
+        boolean bGone = m_currentStep instanceof ScoutStep scout && scout.isGone();
         m_currentStep = null;
+
+        if (bGone) {
+            m_aSteps.clear();
+            finishSteps();
+            return;
+        }
 
         if (result == Step.Result.FAILED) {
             Log.chat("Step failed: " + strName);
@@ -348,11 +384,40 @@ public class Controller {
         return sb.toString().trim();
     }
 
+    private void pruneStorages() {
+        ClientLevel level = Minecraft.getInstance().level;
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (level == null || player == null) return;
+        for (StorageIndex.Entry entry : StorageIndex.get().all()) {
+            if (Storage.canCheck(level, player, entry.pos) && !Storage.isStorage(level, entry.pos)) {
+                StorageIndex.get().forget(entry.pos);
+                Log.chat("The storage at " + entry.pos.toShortString() + " is gone, removed it from the list.");
+            }
+        }
+    }
+
+    private BlockPos usableStorage(BlockPos pos, BlockPos from) {
+        ClientLevel level = Minecraft.getInstance().level;
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (level == null || !Storage.canCheck(level, player, pos) || Storage.isStorage(level, pos)) return pos;
+        BlockPos best = null;
+        double dBest = Double.MAX_VALUE;
+        for (StorageIndex.Entry entry : StorageIndex.get().all()) {
+            double dDistance = entry.pos.distSqr(from);
+            if (dDistance < dBest) {
+                dBest = dDistance;
+                best = entry.pos;
+            }
+        }
+        return best;
+    }
+
     private List<Step> planReturns(boolean bOnlyEmpty) {
         List<Step> aPlan = new ArrayList<>();
         LocalPlayer player = Minecraft.getInstance().player;
         if (player == null) return aPlan;
 
+        pruneStorages();
         BlockPos dump = Config.eShulkerReturn == Config.ShulkerReturn.DUMP ? StorageIndex.get().dump() : null;
         if (Config.eShulkerReturn == Config.ShulkerReturn.DUMP && dump == null) {
             Log.chat("Shulker return is set to dump but no dump chest is set, returning to the origin chests. Use /autobuild setdump.");
@@ -360,7 +425,9 @@ public class Controller {
 
         Map<BlockPos, List<ShulkerLedger.Entry>> aByOrigin = new HashMap<>();
         for (ShulkerLedger.Entry entry : bOnlyEmpty ? ShulkerLedger.get().empties() : ShulkerLedger.get().all()) {
-            aByOrigin.computeIfAbsent(dump != null ? dump : entry.origin, key -> new ArrayList<>()).add(entry);
+            BlockPos target = usableStorage(dump != null ? dump : entry.origin, player.blockPosition());
+            if (target == null) continue;
+            aByOrigin.computeIfAbsent(target, key -> new ArrayList<>()).add(entry);
         }
         boolean bKeepSlots = dump == null;
 
@@ -370,7 +437,7 @@ public class Controller {
         for (Map.Entry<BlockPos, List<ShulkerLedger.Entry>> entry : aOrder) {
             BlockPos pos = entry.getKey();
             aPlan.add(new PathStep("return shulkers to " + pos.toShortString(), () -> new GoalGetToBlock(pos)));
-            aPlan.add(new OpenContainerStep(() -> pos));
+            aPlan.add(new OpenContainerStep(() -> pos, true));
             aPlan.add(new ReturnShulkersStep(() -> pos, entry.getValue(), bKeepSlots));
             aPlan.add(new CloseContainerStep());
         }
@@ -393,6 +460,7 @@ public class Controller {
         List<Step> aPlan = new ArrayList<>();
         if (player == null) return aPlan;
 
+        pruneStorages();
         if (Config.bReturnEmptyShulkers) aPlan.addAll(planReturns(true));
 
         Map<Item, Integer> aWanted = new HashMap<>();
@@ -472,9 +540,11 @@ public class Controller {
         aChests.addAll(aLooseByChest.keySet());
         List<BlockPos> aChestOrder = new ArrayList<>(aChests);
         aChestOrder.sort(Comparator.comparingDouble(pos -> pos.distSqr(from)));
+        ClientLevel level = Minecraft.getInstance().level;
         for (BlockPos pos : aChestOrder) {
+            if (!Storage.canCheck(level, player, pos)) aPlan.add(new ScoutStep(pos));
             aPlan.add(new PathStep("storage " + pos.toShortString(), () -> new GoalGetToBlock(pos)));
-            aPlan.add(new OpenContainerStep(() -> pos));
+            aPlan.add(new OpenContainerStep(() -> pos, true));
             if (aFetchByChest.containsKey(pos)) aPlan.add(new FetchShulkerStep(() -> pos, aFetchByChest.get(pos), Config.iClickDelayTicks));
             if (aLooseByChest.containsKey(pos)) aPlan.add(new TransferStep(aLooseByChest.get(pos), () -> pos, Config.iClickDelayTicks, null, 1));
             aPlan.add(new CloseContainerStep());

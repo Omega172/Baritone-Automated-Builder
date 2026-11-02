@@ -82,6 +82,31 @@ public final class Printer {
         s_aPending.clear();
     }
 
+    public static void assist(BuildSession session, BlockPos pos) {
+        if (!Config.bPrinter) return;
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        ClientLevel level = mc.level;
+        if (player == null || level == null || mc.gameMode == null) return;
+        verifyPlacements(level);
+        if (player.containerMenu != player.inventoryMenu) return;
+        if (s_iRotateWait > 0) {
+            s_iRotateWait--;
+            return;
+        }
+
+        BlockState desired = session.desiredState(pos);
+        if (desired == null || !supported(desired)) return;
+        BlockState current = level.getBlockState(pos);
+        if (!current.canBeReplaced() || current.getBlock() == desired.getBlock()) return;
+        if (!desired.canSurvive(level, pos) || player.getBoundingBox().intersects(new AABB(pos))) return;
+        place(mc, player, level, pos, desired, Config.bPrinterRotate);
+    }
+
+    public static String debug() {
+        return "rotateWait " + s_iRotateWait + " pending " + s_aPending.size() + " bad " + s_aBadPlacements.size() + " airDisabled " + s_bAirDisabled;
+    }
+
     public static boolean airPlaceActive() {
         return switch (Config.eAirPlace) {
             case OFF -> false;
@@ -158,7 +183,7 @@ public final class Printer {
         int iPlaced = 0;
         for (BlockPos pos : aCandidates) {
             BlockState desired = session.desiredState(pos);
-            if (desired != null && place(mc, player, level, pos, desired)) {
+            if (desired != null && place(mc, player, level, pos, desired, Config.bPrinterRotate)) {
                 s_iTimer = 0;
                 if (s_iRotateWait > 0 || ++iPlaced >= Config.iPrinterBlocksPerTick) return;
             }
@@ -228,14 +253,14 @@ public final class Printer {
         return true;
     }
 
-    private static boolean place(Minecraft mc, LocalPlayer player, ClientLevel level, BlockPos pos, BlockState desired) {
+    private static boolean place(Minecraft mc, LocalPlayer player, ClientLevel level, BlockPos pos, BlockState desired, boolean bRotate) {
         Item item = desired.getBlock().asItem();
         if (Config.bPrinterDirtAsGrass && item == Items.GRASS_BLOCK) item = Items.DIRT;
 
-        Placement placement = findPlacement(player, level, pos, desired, item);
+        Placement placement = findPlacement(player, level, pos, desired, item, bRotate);
         if (placement == null) return false;
         BlockHitResult hit = placement.hit();
-        if (Config.bPrinterRotate) {
+        if (bRotate) {
             boolean bChanged = Math.abs(Mth.wrapDegrees(player.getYRot() - placement.flYaw())) > 0.01f || Math.abs(player.getXRot() - placement.flPitch()) > 0.01f;
             player.setYRot(placement.flYaw());
             player.setXRot(placement.flPitch());
@@ -250,9 +275,6 @@ public final class Printer {
         }
         int iPreviousSlot = player.getInventory().getSelectedSlot();
         if (!equip(mc, player, item)) return false;
-        if (hasOrientation(desired)) {
-            Log.LOGGER.info("Placing {} at {} face {} hit {} onto {} yaw {} pitch {} playerYaw {} playerPitch {}", desired, pos.toShortString(), hit.getDirection(), hit.getLocation(), hit.getBlockPos().toShortString(), placement.flYaw(), placement.flPitch(), player.getYRot(), player.getXRot());
-        }
         InteractionResult result = mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit);
         player.getInventory().setSelectedSlot(iPreviousSlot);
         if (!result.consumesAction()) return false;
@@ -309,9 +331,9 @@ public final class Printer {
         }
     }
 
-    private static List<float[]> candidateRotations(LocalPlayer player, BlockState desired, Vec3 hitVec, boolean bOriented) {
+    private static List<float[]> candidateRotations(LocalPlayer player, BlockState desired, Vec3 hitVec, boolean bOriented, boolean bRotate) {
         List<float[]> aRotations = new ArrayList<>();
-        if (!Config.bPrinterRotate) {
+        if (!bRotate) {
             aRotations.add(new float[] {player.getYRot(), player.getXRot()});
             return aRotations;
         }
@@ -341,10 +363,10 @@ public final class Printer {
         }
     }
 
-    private static Placement findPlacement(LocalPlayer player, ClientLevel level, BlockPos pos, BlockState desired, Item item) {
+    private static Placement findPlacement(LocalPlayer player, ClientLevel level, BlockPos pos, BlockState desired, Item item, boolean bRotate) {
         boolean bOriented = hasOrientation(desired);
         for (BlockHitResult hit : candidateHits(player, level, pos, bOriented)) {
-            for (float[] aRotation : candidateRotations(player, desired, hit.getLocation(), bOriented)) {
+            for (float[] aRotation : candidateRotations(player, desired, hit.getLocation(), bOriented, bRotate)) {
                 if (!bOriented || matches(desired, simulate(player, level, desired, item, hit, aRotation[0], aRotation[1]))) {
                     return new Placement(hit, aRotation[0], aRotation[1]);
                 }

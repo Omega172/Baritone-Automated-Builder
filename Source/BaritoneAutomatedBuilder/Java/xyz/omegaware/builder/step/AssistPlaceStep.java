@@ -32,7 +32,7 @@ public class AssistPlaceStep implements Step {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null) return Result.FAILED;
 
-        Printer.tick(m_session);
+        Printer.assist(m_session, m_pos);
 
         BlockState desired = m_session.desiredState(m_pos);
         boolean bPlaced = desired == null || mc.level.getBlockState(m_pos).getBlock() == desired.getBlock();
